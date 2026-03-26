@@ -1,0 +1,67 @@
+
+# --- Configuration --- 
+$SourceFolder = "C:\Users\Administrator\Path\to\file"  # Where your .txt files are 
+$DomainDN = (Get-ADDomain).DistinguishedName 
+$TopLevelOU = "OU=Domain,$DomainDN" 
+$TempPassword = ConvertTo-SecureString "Password2026!" -AsPlainText -Force 
+ 
+# --- Get all text files in the folder --- 
+$FileList = Get-ChildItem -Path $SourceFolder -Filter "*.txt" 
+ 
+Write-Host "--- Starting Bulk Import ---" -ForegroundColor Cyan 
+ 
+foreach ($File in $FileList) { 
+    # 1. Determine Department from Filename (e.g., "HR" from "HR.txt") 
+    $DeptName = $File.BaseName 
+    $TargetOU = "OU=Users,OU=$DeptName,OU=Departments,$TopLevelOU" 
+    $TargetGroup = "SG_$($DeptName)_Department" 
+ 
+    Write-Host "`n[Processing Department: $DeptName]" -ForegroundColor Yellow 
+ 
+    # 2. Read names from the file 
+    $UserNames = Get-Content $File.FullName 
+ 
+    foreach ($FullName in $UserNames) { 
+        # Clean up the name 
+        $NameSplit = $FullName.Split(" ") 
+        $FirstName = $NameSplit[0] 
+        $LastName = $NameSplit[1] 
+         
+        # Generate SamAccountName (e.g., Alice Smith -> asmith) 
+        $SAM = ($FirstName.Substring(0,1) + $LastName).ToLower() 
+        $UPN = "$SAM@Domain.com" 
+ 
+        # 3. Create the User if they don't exist 
+        if (!(Get-ADUser -Filter "SamAccountName -eq '$SAM'")) { 
+            try { 
+                $UserParams = @{
+                    Name = $FullName
+                    SamAccountName = $SAM
+                    UserPrincipalName=  $UPN
+                    GivenName = $FirstName
+                    Surname = $LastName
+                    Path = $TargetOU
+                    AccountPassword = $TempPassword
+                    ChangePasswordAtLogon = $true
+                    Enabled = $true
+                    DisplayName = $FullName
+                }
+                New-ADUser @UserParams
+ 
+                Write-Host "  [+] Created User: $SAM" -ForegroundColor Green 
+ 
+                # 4. Add to Departmental Security Group 
+                Add-ADGroupMember -Identity $TargetGroup -Members $SAM 
+                Write-Host "    [->] Added to $TargetGroup" -ForegroundColor Gray 
+            } 
+            catch { 
+                Write-Host "  [!] Error creating $SAM : $($_.Exception.Message)" -ForegroundColor Red
+            } 
+        } 
+        else { 
+            Write-Host "  [!] User $SAM already exists. Skipping." -ForegroundColor DarkYellow 
+        } 
+    } 
+} 
+ 
+Write-Host "`n--- Import Process Finished ---" -ForegroundColor Cyan 
